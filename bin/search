@@ -1,0 +1,9 @@
+#!/bin/sh
+#
+# Quick case-insensitive search in a directory for a string ($@).
+
+if command -v rg >/dev/null 2>&1; then
+    rg -i "$@"
+else
+    grep -ri "$@" .
+fi

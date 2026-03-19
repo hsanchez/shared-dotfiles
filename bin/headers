@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# https://github.com/rtomayko/dotfiles/blob/rtomayko/.local/bin/headers
+#
+# Fetches HTTP headers for a URL in a readable format:
+#
+# $ headers https://example.com
+# > GET / HTTP/2
+# > Host: example.com
+# ...
+# < HTTP/2 200
+# < content-type: text/html
+# < cache-control: max-age=604800
+# ...
+
+curl -sv "$@" 2>&1 >/dev/null |
+  grep -v "^\*" |
+  grep -v "^}" |
+  cut -c3-

@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+# git-explain (originally git-wtf) Copyright 2008--2009 William Morgan <wmorgan at the masanjin dot nets>.
+# Python port: zero stdlib-only dependencies.
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
+
+import os
+import re
+import subprocess
+import sys
+
+USAGE = """\
+Usage: git explain [branch+] [options]
+
+If [branch] is not specified, git-explain will use the current branch. The possible
+[options] are:
+
+  -l, --long          include author info and date for each commit
+  -a, --all           show all branches across all remote repos, not just
+                      those from origin
+  -A, --all-commits   show all commits, not just the first 5
+  -s, --short         don't show commits
+  -k, --key           show key
+  -r, --relations     show relation to features / integration branches
+      --dump-config   print out current configuration and exit
+
+git-explain uses some heuristics to determine which branches are integration
+branches, and which are feature branches. (Specifically, it assumes the
+integration branches are named "main", "master", "next" and "edge".) If it guesses
+incorrectly, you will have to create a .git-explainrc file.
+
+To start building a configuration file, run "git-explain --dump-config >
+.git-explainrc" and edit it. The config file is a YAML file that specifies the
+integration branches, any branches to ignore, and the max number of commits to
+display when --all-commits isn't used.  git-explain will look for a .git-explainrc file
+starting in the current directory, and recursively up to the root.
+
+IMPORTANT NOTE: all local branches referenced in .git-explainrc must be prefixed
+with heads/, e.g. "heads/master". Remote branches must be of the form
+remotes/<remote>/<branch>.
+"""
+
+KEY = """\
+KEY:
+() branch only exists locally
+{} branch only exists on a remote repo
+[] branch exists locally and remotely
+
+x merge occurs both locally and remotely
+~ merge occurs only locally
+  (space) branch isn't merged in
+
+(It's possible for merges to occur remotely and not locally, of course, but
+that's a less common case and git-explain currently doesn't display anything
+special for it.)
+"""
+
+CONFIG_FN = ".git-explainrc"
+
+# ---------------------------------------------------------------------------
+# Argument parsing (no argparse to keep zero-dependency spirit clean)
+# ---------------------------------------------------------------------------
+
+_argv = sys.argv[1:]
+
+if "--help" in _argv or "-h" in _argv:
+    print(USAGE)
+    sys.exit(0)
+
+
+def _pop(flag):
+    if flag in _argv:
+        _argv.remove(flag)
+        return True
+    return False
+
+
+opt_long = _pop("--long") or _pop("-l")
+opt_short = _pop("--short") or _pop("-s")
+opt_all = _pop("--all") or _pop("-a")
+opt_all_commits = _pop("--all-commits") or _pop("-A")
+opt_dump_config = _pop("--dump-config")
+opt_key = _pop("--key") or _pop("-k")
+opt_show_relations = _pop("--relations") or _pop("-r")
+
+for _a in _argv:
+    if _a.startswith("--"):
+        sys.exit(f"Error: unknown argument {_a}.")
+
+# Remaining items are branch names
+branch_args = _argv
+
+# ---------------------------------------------------------------------------
+# Color
+# ---------------------------------------------------------------------------
+
+_want = subprocess.run(
+    "git config color.explain", shell=True, capture_output=True, text=True
+).stdout.strip()
+if not _want:
+    _want = subprocess.run(
+        "git config color.ui", shell=True, capture_output=True, text=True
+    ).stdout.strip()
+
+USE_COLOR = _want == "true" or (_want == "auto" and sys.stdout.isatty())
+
+
+def red(s):
+    return f"\033[31m{s}\033[0m" if USE_COLOR else s
+
+
+def green(s):
+    return f"\033[32m{s}\033[0m" if USE_COLOR else s
+
+
+def yellow(s):
+    return f"\033[33m{s}\033[0m" if USE_COLOR else s
+
+
+def cyan(s):
+    return f"\033[36m{s}\033[0m" if USE_COLOR else s
+
+
+def grey(s):
+    return f"\033[1;30m{s}\033[0m" if USE_COLOR else s
+
+
+def purple(s):
+    return f"\033[35m{s}\033[0m" if USE_COLOR else s
+
+
+# ---------------------------------------------------------------------------
+# Minimal YAML subset parser (handles the .git-explainrc format; stdlib only)
+# Supports: scalar string/int values and flat string lists.
+# ---------------------------------------------------------------------------
+
+
+def _parse_yaml(text):
+    result = {}
+    current_list = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("- "):
+            if current_list is not None:
+                current_list.append(stripped[2:].strip())
+            continue
+        if ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if value:
+                try:
+                    result[key] = int(value)
+                except ValueError:
+                    result[key] = value
+                current_list = None
+            else:
+                current_list = []
+                result[key] = current_list
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+
+def _find_file(fn):
+    while True:
+        if os.path.exists(fn):
+            return fn
+        parent = os.path.join("..", fn)
+        if os.path.abspath(parent) == os.path.abspath(fn):
+            return None
+        fn = parent
+
+
+config = {
+    "integration-branches": ["heads/main", "heads/master", "heads/next", "heads/edge"],
+    "ignore": [],
+    "max_commits": 5,
+}
+
+_cfg_path = _find_file(CONFIG_FN)
+if _cfg_path:
+    with open(_cfg_path) as _f:
+        _h = _parse_yaml(_f.read())
+    if _h:
+        if "versions" in _h and "integration-branches" not in _h:
+            _h["integration-branches"] = _h.pop("versions")
+        config.update(_h)
+
+if opt_dump_config:
+    for _k, _v in config.items():
+        if isinstance(_v, list):
+            print(f"{_k}:")
+            for _item in _v:
+                print(f"- {_item}")
+        else:
+            print(f"{_k}: {_v}")
+    sys.exit(0)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _run(cmd):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout
+
+
+def pluralize(n, s):
+    return f"{n} {s}" + ("" if n == 1 else "s")
+
+
+def commits_between(frm, to):
+    if opt_long:
+        fmt = f"- %s [{yellow('%h')}] ({purple('%ae')}; %ar)"
+    else:
+        fmt = f"- %s [{yellow('%h')}]"
+    out = _run(f'git log --pretty=format:"{fmt}" {frm}..{to}')
+    return [line for line in re.split(r"[\r\n]+", out) if line]
+
+
+def show_commits(commits, prefix="    "):
+    if not commits:
+        print(f"{prefix} none")
+        return
+    max_c = len(commits) if opt_all_commits else config["max_commits"]
+    if max_c == len(commits) - 1:  # never show "and 1 more"
+        max_c += 1
+    for c in commits[:max_c]:
+        print(f"{prefix}{c}")
+    if len(commits) > max_c:
+        print(grey(f"{prefix}... and {len(commits) - max_c} more (use -A to see all)."))
+
+
+def ahead_behind_string(ahead, behind):
+    parts = []
+    if ahead:
+        parts.append(pluralize(len(ahead), "commit") + " ahead")
+    if behind:
+        parts.append(pluralize(len(behind), "commit") + " behind")
+    return "; ".join(parts)
+
+
+def widget(merged_in, remote_only=False, local_only=False, local_only_merge=False):
+    if remote_only:
+        left, right = "{", "}"
+    elif local_only:
+        left, right = "(", ")"
+    else:
+        left, right = "[", "]"
+    if merged_in and local_only_merge:
+        middle = green("~")
+    elif merged_in:
+        middle = green("x")
+    else:
+        middle = " "
+    return f"{left}{middle}{right}"
+
+
+# ---------------------------------------------------------------------------
+# Display
+# ---------------------------------------------------------------------------
+
+
+def show(b):
+    have_both = b.get("local_branch") and b.get("remote_branch")
+
+    pushc = pullc = oosync = None
+    if have_both:
+        pushc = commits_between(b["remote_branch"], b["local_branch"])
+        pullc = commits_between(b["local_branch"], b["remote_branch"])
+        oosync = bool(pushc) and bool(pullc)
+
+    if b.get("local_branch"):
+        name = re.sub(r"^heads/", "", b["local_branch"])
+        print(f"Local branch: {green(name)}")
+        if have_both:
+            if not pushc:
+                print(f"{widget(True)} in sync with remote")
+            else:
+                action = "push after rebase / merge" if oosync else "push"
+                print(f"{widget(False)} NOT in sync with remote (you should {action})")
+                if not opt_short:
+                    show_commits(pushc)
+
+    if b.get("remote_branch"):
+        print(f"Remote branch: {cyan(b['remote_branch'])} ({b.get('remote_url', '')})")
+        if have_both:
+            if not pullc:
+                print(f"{widget(True)} in sync with local")
+            else:
+                action = "merge" if not pushc else "rebase / merge"
+                print(f"{widget(False)} NOT in sync with local (you should {action})")
+                if not opt_short:
+                    show_commits(pullc)
+
+    if oosync:
+        print(
+            f"\n{red('WARNING')}: local and remote branches have diverged. A merge will occur unless you rebase."
+        )
+
+
+def show_relations(b, all_branches):
+    ibs = {
+        k: v
+        for k, v in all_branches.items()
+        if v.get("local_branch") in config["integration-branches"]
+        or v.get("remote_branch") in config["integration-branches"]
+    }
+    fbs = {k: v for k, v in all_branches.items() if k not in ibs}
+
+    if b.get("local_branch") in config["integration-branches"]:
+        if fbs:
+            print("\nFeature branches:")
+        for name, br in fbs.items():
+            if (
+                br.get("local_branch") in config["ignore"]
+                or br.get("remote_branch") in config["ignore"]
+            ):
+                continue
+            if br.get("ignore"):
+                continue
+
+            local_only = br.get("remote_branch") is None
+            remote_only = br.get("local_branch") is None
+
+            if local_only:
+                display = purple(br["name"])
+            elif remote_only:
+                display = cyan(br["name"])
+            else:
+                display = green(br["name"])
+
+            # for remote-only branches compute wrt remote head, otherwise local
+            head = br["remote_branch"] if remote_only else br["local_branch"]
+
+            remote_ahead = (
+                commits_between(b["remote_branch"], head)
+                if b.get("remote_branch")
+                else []
+            )
+            local_ahead = (
+                commits_between(b["local_branch"], head)
+                if b.get("local_branch")
+                else []
+            )
+
+            lo = "(local-only) " if local_only else ""
+            if not local_ahead and not remote_ahead:
+                print(
+                    f"{widget(True, remote_only, local_only)}       {display} {lo}is merged in"
+                )
+            elif not local_ahead:
+                print(
+                    f"{widget(True, remote_only, local_only, True)} {display} merged in (only locally)"
+                )
+            else:
+                behind = commits_between(
+                    head, br.get("local_branch") or br.get("remote_branch")
+                )
+                ahead = remote_ahead if remote_only else local_ahead
+                print(
+                    f"{widget(False, remote_only, local_only)} {display} {lo}is NOT merged in ({ahead_behind_string(ahead, behind)})"
+                )
+                if not opt_short:
+                    show_commits(ahead)
+    else:
+        if ibs:
+            print("\nIntegration branches:")
+        for v, br in sorted(ibs.items()):
+            if (
+                br.get("local_branch") in config["ignore"]
+                or br.get("remote_branch") in config["ignore"]
+            ):
+                continue
+            if br.get("ignore"):
+                continue
+
+            local_only = br.get("remote_branch") is None
+            remote_only = br.get("local_branch") is None
+            display = cyan(br["name"]) if remote_only else green(br["name"])
+
+            ahead = commits_between(v, b.get("local_branch") or b.get("remote_branch"))
+            if not ahead:
+                print(f"{widget(True, local_only)} merged into {display}")
+            else:
+                print(
+                    f"{widget(False, local_only)} NOT merged into {display} ({pluralize(len(ahead), 'commit')} ahead)"
+                )
+                if not opt_short:
+                    show_commits(ahead)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+# Index registered remotes
+remotes = {}
+for _line in _run("git config --get-regexp ^remote\\..*\\.url").splitlines():
+    _m = re.match(r"^remote\.(.+?)\.url (.+)$", _line)
+    if _m and _m.group(1) not in remotes:
+        remotes[_m.group(1)] = _m.group(2)
+
+# Index tracked branches
+branches = {}
+for _line in _run("git config --get-regexp ^branch\\.").splitlines():
+    _m = re.match(r"^branch\.(.*?)\.remote (.+)$", _line)
+    if _m:
+        _name, _remote = _m.group(1), _m.group(2)
+        branches.setdefault(_name, {}).update(
+            remote=_remote, remote_url=remotes.get(_remote)
+        )
+        continue
+    _m = re.match(r"^branch\.(.*?)\.merge (?:(?:refs/)?heads/)?(.+)$", _line)
+    if _m:
+        _name, _rmp = _m.group(1), _m.group(2)
+        branches.setdefault(_name, {}).update(remote_mergepoint=_rmp)
+
+# Index all refs
+remote_branches = {}
+for _line in _run("git show-ref").splitlines():
+    _parts = _line.split(" refs/", 1)
+    if len(_parts) != 2:
+        continue
+    _, _ref = _parts
+
+    _m = re.match(r"^heads/(.+)$", _ref)
+    if _m:
+        _name = _m.group(1)
+        if _name == "HEAD":
+            continue
+        branches.setdefault(_name, {}).update(name=_name, local_branch=_ref)
+        continue
+
+    _m = re.match(r"^remotes/(.+?)/(.+)$", _ref)
+    if _m:
+        _remote, _name = _m.group(1), _m.group(2)
+        remote_branches[f"{_remote}/{_name}"] = True
+        if _name == "HEAD":
+            continue
+        _ignore = not (opt_all or _remote == "origin")
+        _branch = _name
+        _key = (
+            _name
+            if (_name in branches and branches[_name].get("remote") == _remote)
+            else f"{_remote}/{_branch}"
+        )
+        branches.setdefault(_key, {}).update(
+            name=_key,
+            remote=_remote,
+            remote_branch=f"{_remote}/{_branch}",
+            remote_url=remotes.get(_remote),
+            ignore=_ignore,
+        )
+
+# Assemble remote_branch pointers for tracked branches
+for _b in branches.values():
+    if not (_b.get("remote") and _b.get("remote_mergepoint")):
+        continue
+    if _b["remote"] == ".":
+        _b["remote_branch"] = _b["remote_mergepoint"]
+    else:
+        _t = f"{_b['remote']}/{_b['remote_mergepoint']}"
+        _b["remote_branch"] = _t if remote_branches.get(_t) else None
+
+# Resolve targets
+show_dirty = not branch_args
+if not branch_args:
+    _head = _run("git symbolic-ref HEAD").strip()
+    _head = re.sub(r"^refs/heads/", "", _head)
+    target_names = [_head]
+else:
+    target_names = [re.sub(r"^heads/", "", x) for x in branch_args]
+
+targets = []
+for _t in target_names:
+    if _t not in branches:
+        sys.exit(f"Error: can't find branch {_t!r}.")
+    targets.append(branches[_t])
+
+for t in targets:
+    show(t)
+    if opt_show_relations or not t.get("remote_branch"):
+        show_relations(t, branches)
+
+modified = show_dirty and _run("git ls-files -m") != ""
+uncommitted = show_dirty and _run("git diff-index --cached HEAD") != ""
+
+if opt_key:
+    print()
+    print(KEY)
+
+if modified or uncommitted:
+    print()
+if modified:
+    print(f"{red('NOTE')}: working directory contains modified files.")
+if uncommitted:
+    print(f"{red('NOTE')}: staging area contains staged but uncommitted files.")

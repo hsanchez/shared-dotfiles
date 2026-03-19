@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+# git-rank-contributors: rank contributors by total diff size.
+# A change counts twice as much as a plain addition or deletion.
+#
+# git-rank-contributors Copyright 2008 William Morgan <wmorgan-git-wt-add@masanjin.net>.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version.
+
+import re
+import subprocess
+import sys
+
+verbose   = "-v" in sys.argv
+obfuscate = "-o" in sys.argv
+htmlize   = "-h" in sys.argv
+
+def obfuscate_addr(s):
+    s = re.sub(r"@", " at the ", s)
+    s = re.sub(r"\.(\w+)(>|$)", r" dot \1s\2", s)
+    return s
+
+def htmlize_str(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+log = subprocess.run(
+    ["git", "log", "-M", "-C", "-C", "-p", "--no-color"],
+    capture_output=True,
+).stdout.decode("utf-8", errors="replace")
+
+lines = {}
+author = None
+state = "pre_author"
+
+for line in log.splitlines():
+    if state in ("pre_author", "post_author"):
+        m = re.search(r"Author: (.*)$", line)
+        if m:
+            author = m.group(1).strip()
+            state = "post_author"
+            lines.setdefault(author, 0)
+            continue
+    if state == "post_author" and line.startswith("+++"):
+        state = "in_diff"
+        continue
+    if state == "in_diff":
+        if line.startswith(("+", "-")):
+            lines[author] += 1
+        elif line.startswith("commit "):
+            state = "pre_author"
+
+for author, count in sorted(lines.items(), key=lambda x: -x[1]):
+    if obfuscate:
+        author = obfuscate_addr(author)
+    if htmlize:
+        author = htmlize_str(author)
+    if verbose:
+        print(f"{author}: {count} lines of diff")
+    else:
+        print(author)
