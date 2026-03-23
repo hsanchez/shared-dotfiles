@@ -1,6 +1,6 @@
-# Sets reasonable macOS defaults.
+# Sets some macOS defaults.
 #
-# Or, in other words, set shit how I like in macOS.
+# Keep this limited to low-risk, user-level preferences.
 #
 # The original idea (and a couple settings) were grabbed from:
 #   https://github.com/mathiasbynens/dotfiles/blob/master/.macos
@@ -17,9 +17,8 @@ defaults write NSGlobalDomain InitialKeyRepeat -int 15
 # Always open everything in Finder's list view. This is important.
 defaults write com.apple.Finder FXPreferredViewStyle Nlsv
 
-# Show the ~/Library folder and hidden files.
+# Show the ~/Library folder.
 chflags nohidden ~/Library
-defaults write com.apple.finder AppleShowAllFiles -bool true
 
 # Set the Finder prefs for showing a few different volumes on the Desktop.
 defaults write com.apple.finder ShowExternalHardDrivesOnDesktop -bool true
@@ -34,9 +33,3 @@ defaults write com.apple.Safari.plist ShowFavoritesBar -bool false
 
 # Always show Safari's "URL display" tab in the lower left on mouseover.
 defaults write com.apple.Safari ShowOverlayStatusBar -bool true
-
-# Set up Safari for development.
-defaults write com.apple.Safari.plist IncludeDevelopMenu -bool true
-defaults write com.apple.Safari.plist WebKitDeveloperExtrasEnabledPreferenceKey -bool true
-defaults write com.apple.Safari.plist "com.apple.Safari.ContentPageGroupIdentifier.WebKit2DeveloperExtrasEnabled" -bool true
-defaults write NSGlobalDomain WebKitDeveloperExtras -bool true
