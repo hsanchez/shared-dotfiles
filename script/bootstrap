@@ -49,11 +49,56 @@ setup_gitconfig () {
   fi
 }
 
+next_preserved_zshrc_path () {
+  local base="$HOME/.zshrc.company"
+  local candidate="$base"
+  local index=1
+
+  while [ -e "$candidate" ] || [ -L "$candidate" ]
+  do
+    candidate="${base}.${index}"
+    index=$((index + 1))
+  done
+
+  printf '%s' "$candidate"
+}
+
+append_preserved_zshrc_to_localrc () {
+  local preserved_zshrc=$1
+  local localrc="$HOME/.localrc"
+  local marker="# Load the company-provided shell config preserved during dotfiles setup."
+
+  if [ -f "$localrc" ] && grep -Fq "$preserved_zshrc" "$localrc"
+  then
+    success "kept existing $localrc entry for $preserved_zshrc"
+    return
+  fi
+
+  if [ -f "$localrc" ]
+  then
+    printf '\n%s\nif [[ -r %s ]]; then\n  source %s\nfi\n' "$marker" "$preserved_zshrc" "$preserved_zshrc" >> "$localrc"
+  else
+    printf '%s\nif [[ -r %s ]]; then\n  source %s\nfi\n' "$marker" "$preserved_zshrc" "$preserved_zshrc" > "$localrc"
+  fi
+
+  success "updated $localrc to source $preserved_zshrc"
+}
+
+preserve_zshrc () {
+  local dst=$1
+  local preserved_zshrc
+
+  preserved_zshrc="$(next_preserved_zshrc_path)"
+  mv "$dst" "$preserved_zshrc"
+  success "moved $dst to $preserved_zshrc"
+  append_preserved_zshrc_to_localrc "$preserved_zshrc"
+}
+
 
 link_file () {
   local src=$1 dst=$2
 
-  local overwrite= backup= skip=
+  local overwrite= backup= skip= preserve=
   local action=
 
   if [ -f "$dst" -o -d "$dst" -o -L "$dst" ]
@@ -71,8 +116,14 @@ link_file () {
 
       else
 
-        user "File already exists: $dst ($(basename "$src")), what do you want to do?\n\
+        if [ "$dst" == "$HOME/.zshrc" ]
+        then
+          user "File already exists: $dst ($(basename "$src")), what do you want to do?\n\
+        [s]kip, [S]kip all, [o]verwrite, [O]verwrite all, [b]ackup, [B]ackup all, [p]reserve?"
+        else
+          user "File already exists: $dst ($(basename "$src")), what do you want to do?\n\
         [s]kip, [S]kip all, [o]verwrite, [O]verwrite all, [b]ackup, [B]ackup all?"
+        fi
         read -n 1 action
 
         case "$action" in
@@ -84,6 +135,8 @@ link_file () {
             backup=true;;
           B )
             backup_all=true;;
+          p )
+            preserve=true;;
           s )
             skip=true;;
           S )
@@ -110,6 +163,11 @@ link_file () {
     then
       mv "$dst" "${dst}.backup"
       success "moved $dst to ${dst}.backup"
+    fi
+
+    if [ "$preserve" == "true" ]
+    then
+      preserve_zshrc "$dst"
     fi
 
     if [ "$skip" == "true" ]
