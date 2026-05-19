@@ -60,7 +60,7 @@ battery_status() {
     exit 0
   fi
 
-  if [[ $(sysctl -n hw.model) == *"Book"* ]]
+  if pmset -g ps | grep -q "Battery"
   then
     $ZSH/bin/battery-status
   fi
