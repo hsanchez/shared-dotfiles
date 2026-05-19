@@ -17,10 +17,7 @@
         unpublish = !$ZSH/bin/git-unpublish
         # Usage: sprout [<branch>] <new-branch>
         sprout = !f() { git checkout -b $2 $1; }; f
-        sync = !legit sync
-        switch = !legit switch
-        resync = !legit resync
-        undo = !legit undo
+        undo = !$ZSH/bin/git-undo
 [color]
         diff = auto
         status = auto
