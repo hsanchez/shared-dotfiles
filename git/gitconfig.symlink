@@ -9,12 +9,12 @@
         explain     = !$ZSH/bin/git-explain
         rank-contributors = !$ZSH/bin/git-rank-contributors
         count   = !git shortlog -sn
-        branches = !legit branches
+        branches = !$ZSH/bin/git-branches
         # Usage: graft | harvest <branch> <into-branch> (auto merge a branch into another)
         graft = !f() { git merge --squash $1 $2 && git checkout $2 && git branch -D $1; }; f
         harvest = !f() { git checkout $2 && git merge $1 && git checkout $1; }; f
-        publish = !legit publish
-        unpublish = !legit unpublish
+        publish = !$ZSH/bin/git-publish
+        unpublish = !$ZSH/bin/git-unpublish
         # Usage: sprout [<branch>] <new-branch>
         sprout = !f() { git checkout -b $2 $1; }; f
         sync = !legit sync

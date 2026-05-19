@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Shared helpers for the legit-compatible git commands.
+
+legit_die() {
+  echo "$1" >&2
+  exit "${2:-1}"
+}
+
+legit_repo_check() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+    legit_die "Not a git repository." 128
+
+  if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    legit_die "Repo is empty." 128
+  fi
+}
+
+legit_current_branch() {
+  branch=$(git symbolic-ref --quiet --short HEAD) ||
+    legit_die "Not on a branch."
+
+  printf '%s\n' "$branch"
+}
+
+legit_default_remote() {
+  require_remote=${1:-false}
+  configured=$(git config --get legit.remote || true)
+
+  if [ -n "$configured" ]; then
+    if git remote get-url "$configured" >/dev/null 2>&1; then
+      printf '%s\n' "$configured"
+      return
+    fi
+
+    fallback=$(git config --bool --get legit.remoteFallback || true)
+    if [ "$fallback" != "true" ]; then
+      if [ ! -t 0 ]; then
+        legit_die "Remote \"$configured\" does not exist and stdin is not a terminal." 64
+      fi
+
+      echo "Remote \"$configured\" does not exist!" >&2
+      printf "\nPress \`Y\` to abort now,\n" >&2
+      printf "\`n\` to use default remote and turn fallback on for this repo: " >&2
+      read -r answer
+
+      case "$answer" in
+        [yY])
+          printf "\nAborted. Please update your git configuration.\n" >&2
+          exit 64
+          ;;
+        *)
+          git config legit.remoteFallback true
+          printf "\n\`legit.RemoteFallback\` changed to true for current repo.\n" >&2
+          ;;
+      esac
+    fi
+  fi
+
+  remote=$(git remote | sed -n '1p')
+  if [ -z "$remote" ] && [ "$require_remote" = "true" ]; then
+    legit_die "No git remotes configured. Please add one." 128
+  fi
+
+  printf '%s\n' "$remote"
+}

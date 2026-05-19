@@ -1,0 +1,15 @@
+#!/bin/sh
+#
+# Publish the current branch, or the branch provided, to the default remote.
+
+set -e
+
+# shellcheck source=bin/git-legit-common
+. "$(dirname "$0")/git-legit-common"
+
+legit_repo_check
+
+branch=${1:-$(legit_current_branch)}
+remote=$(legit_default_remote true)
+
+git push -u "$remote" "$branch"

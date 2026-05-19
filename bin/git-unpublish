@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# Remove the current branch, or the branch provided, from the default remote.
+
+set -e
+
+# shellcheck source=bin/git-legit-common
+. "$(dirname "$0")/git-legit-common"
+
+legit_repo_check
+
+branch=${1:-$(legit_current_branch)}
+remote=$(legit_default_remote true)
+
+if ! git push "$remote" ":$branch"; then
+  echo "Unpublish failed. Fetching." >&2
+  git fetch "$remote" --prune >&2
+  exit 1
+fi
